@@ -189,9 +189,18 @@ function samOnLoad() {
 // ── Timeline ──────────────────────────────────────────────────────────────────
 const timeline = [];
 
+// Allows any keypress to act as a button click (desktop convenience).
+function keyAlsoClicks() {
+  function handler() {
+    document.removeEventListener('keydown', handler);
+    document.querySelector('.jspsych-btn').click();
+  }
+  document.addEventListener('keydown', handler);
+}
+
 // Welcome
 timeline.push({
-  type: jsPsychHtmlKeyboardResponse,
+  type: jsPsychHtmlButtonResponse,
   stimulus: `
     <h2>Chords &amp; Emotions</h2>
     <p>Welcome! In this study you will listen to pairs of musical chords<br>
@@ -199,14 +208,14 @@ timeline.push({
     <p>The study contains <strong>48 chord pairs</strong> and takes approximately
        <strong>25–35 minutes</strong>.</p>
     <p style="color:#555">Please use headphones if possible.</p>
-    <p style="margin-top:30px"><em>Press any key to read the instructions.</em></p>
   `,
-  choices: "ALL_KEYS",
+  choices: ["Continue"],
+  on_load: keyAlsoClicks,
 });
 
 // Instructions
 timeline.push({
-  type: jsPsychHtmlKeyboardResponse,
+  type: jsPsychHtmlButtonResponse,
   stimulus: `
     <h3>Instructions</h3>
     <p>On each trial you will:</p>
@@ -219,9 +228,9 @@ timeline.push({
     </ol>
     <p>Base your responses on the <em>pair as a whole</em>, not each chord separately.</p>
     <p>There are no right or wrong answers — go with your gut.</p>
-    <p style="margin-top:24px"><em>Press any key to start the experiment.</em></p>
   `,
-  choices: "ALL_KEYS",
+  choices: ["Start experiment"],
+  on_load: keyAlsoClicks,
 });
 
 // Trials
@@ -320,14 +329,14 @@ for (const pair of shuffledPairs) {
 
 // Debrief
 timeline.push({
-  type: jsPsychHtmlKeyboardResponse,
+  type: jsPsychHtmlButtonResponse,
   stimulus: `
     <h2>Thank you!</h2>
     <p>You have completed all 48 chord pairs.</p>
     <p>Your responses are being saved.</p>
-    <p style="margin-top:30px"><em>Press any key to finish.</em></p>
   `,
-  choices: "ALL_KEYS",
+  choices: ["Finish"],
+  on_load: keyAlsoClicks,
 });
 
 jsPsych.run(timeline);
