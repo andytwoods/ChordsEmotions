@@ -7,6 +7,7 @@
   <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@2.0.0"></script>
   <script src="https://unpkg.com/@jspsych/plugin-html-button-response@2.0.0"></script>
   <script src="https://unpkg.com/@jspsych/plugin-survey-text@2.0.0"></script>
+  <script src="https://unpkg.com/tone@14.7.77/build/Tone.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/jspsych@8.2.3/css/jspsych.css">
   <style>
     .chord-display {
@@ -60,6 +61,163 @@
 <body>
 <script>
 
+// ── Chord Synthesiser ─────────────────────────────────────────────────────────
+//
+// Change ACTIVE_INSTRUMENT to switch what instrument plays the chords.
+// All synthesis is done in-browser via Tone.js — no MP3 chord files needed.
+//
+// Available instruments:
+//   'acoustic_grand_piano'  – Salamander Grand Piano (highest quality, ~6 MB)
+//   'electric_piano_1'      – Rhodes electric piano
+//   'string_ensemble_1'     – String ensemble pad
+//   'choir_aahs'            – Choir aahs
+//   'acoustic_guitar_nylon' – Nylon-string guitar
+//
+const ACTIVE_INSTRUMENT = 'acoustic_grand_piano';
+
+// Reverb settings (applied to all instruments)
+const REVERB_DECAY = 1.8;   // seconds of tail
+const REVERB_WET   = 0.22;  // 0 = dry, 1 = fully wet
+
+// Root octave for all chords (4 = middle-C range, good for piano/strings)
+const CHORD_OCTAVE = 4;
+
+// ── Instrument definitions ────────────────────────────────────────────────────
+//
+// Salamander Grand Piano: hosted by Tone.js, best pitch coverage.
+// All other instruments: FluidR3_GM soundfont via gleitz/midi-js-soundfonts CDN.
+//   Samples are spaced a minor-third apart (A2…Gb5), which gives Tone.js enough
+//   reference points for accurate pitch-shifting across the full keyboard.
+
+const GLEITZ_BASE = 'https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/';
+
+// Build a note→filename map for gleitz instruments.
+// Keys and filenames use the same string (e.g. 'Eb4' → 'Eb4.mp3').
+function gleitzUrls(noteNames) {
+  return Object.fromEntries(noteNames.map(n => [n, n + '.mp3']));
+}
+
+// Spread every minor-third from A2 to Gb5 — good coverage, low download size.
+const GLEITZ_SPREAD = ['A2','C3','Eb3','Gb3','A3','C4','Eb4','Gb4','A4','C5','Eb5','Gb5'];
+
+const INSTRUMENTS = {
+  acoustic_grand_piano: {
+    label: 'Grand Piano (Salamander)',
+    baseUrl: 'https://tonejs.github.io/audio/salamander/',
+    // Salamander filenames encode D# as 'Ds' and F# as 'Fs'
+    urls: {
+      'A0':'A0.mp3',  'C1':'C1.mp3',  'D#1':'Ds1.mp3', 'F#1':'Fs1.mp3',
+      'A1':'A1.mp3',  'C2':'C2.mp3',  'D#2':'Ds2.mp3', 'F#2':'Fs2.mp3',
+      'A2':'A2.mp3',  'C3':'C3.mp3',  'D#3':'Ds3.mp3', 'F#3':'Fs3.mp3',
+      'A3':'A3.mp3',  'C4':'C4.mp3',  'D#4':'Ds4.mp3', 'F#4':'Fs4.mp3',
+      'A4':'A4.mp3',  'C5':'C5.mp3',  'D#5':'Ds5.mp3', 'F#5':'Fs5.mp3',
+      'A5':'A5.mp3',  'C6':'C6.mp3',  'D#6':'Ds6.mp3', 'F#6':'Fs6.mp3',
+      'A6':'A6.mp3',  'C7':'C7.mp3',  'D#7':'Ds7.mp3', 'F#7':'Fs7.mp3',
+      'A7':'A7.mp3',  'C8':'C8.mp3',
+    },
+  },
+
+  electric_piano_1: {
+    label: 'Electric Piano (Rhodes)',
+    baseUrl: GLEITZ_BASE + 'electric_piano_1-mp3/',
+    urls: gleitzUrls(GLEITZ_SPREAD),
+  },
+
+  string_ensemble_1: {
+    label: 'String Ensemble',
+    baseUrl: GLEITZ_BASE + 'string_ensemble_1-mp3/',
+    urls: gleitzUrls(GLEITZ_SPREAD),
+  },
+
+  choir_aahs: {
+    label: 'Choir (Aahs)',
+    baseUrl: GLEITZ_BASE + 'choir_aahs-mp3/',
+    urls: gleitzUrls(GLEITZ_SPREAD),
+  },
+
+  acoustic_guitar_nylon: {
+    label: 'Nylon Guitar',
+    baseUrl: GLEITZ_BASE + 'acoustic_guitar_nylon-mp3/',
+    urls: gleitzUrls(GLEITZ_SPREAD),
+  },
+};
+
+// ── Synth internals ───────────────────────────────────────────────────────────
+
+const synth = { sampler: null, reverb: null, ready: false };
+
+async function initSynth() {
+  const cfg = INSTRUMENTS[ACTIVE_INSTRUMENT];
+  if (!cfg) {
+    console.error('[ChordSynth] Unknown instrument:', ACTIVE_INSTRUMENT);
+    return;
+  }
+  console.log('[ChordSynth] Loading', cfg.label, '…');
+
+  synth.reverb = new Tone.Reverb({ decay: REVERB_DECAY, preDelay: 0.01, wet: REVERB_WET });
+  await synth.reverb.ready;
+  synth.reverb.toDestination();
+
+  synth.sampler = new Tone.Sampler({
+    urls: cfg.urls,
+    baseUrl: cfg.baseUrl,
+    onload: () => {
+      synth.ready = true;
+      console.log('[ChordSynth] Ready —', cfg.label);
+    },
+    onerror: (err) => console.error('[ChordSynth] Sample load error:', err),
+  });
+  synth.sampler.connect(synth.reverb);
+}
+
+// ── Chord → notes conversion ──────────────────────────────────────────────────
+//
+// Supports all roots in the study: C C# Db D D# Eb E F F# Gb G G# Ab A A# Bb B
+// Supports qualities: major, minor
+//
+const NOTE_SEMITONE = {
+  'C':0, 'C#':1, 'Db':1, 'D':2, 'D#':3, 'Eb':3, 'E':4,
+  'F':5, 'F#':6, 'Gb':6, 'G':7, 'G#':8, 'Ab':8,
+  'A':9, 'A#':10, 'Bb':10, 'B':11,
+};
+
+const SEMITONE_NAME = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+
+const CHORD_INTERVALS = {
+  major: [0, 4, 7],
+  minor: [0, 3, 7],
+};
+
+// Returns an array of Tone.js note strings, e.g. ['C4','E4','G4']
+function chordToNotes(chordName, octave = CHORD_OCTAVE) {
+  const [rootName, quality] = chordName.split(' ');
+  const rootMidi = (octave + 1) * 12 + NOTE_SEMITONE[rootName];
+  return CHORD_INTERVALS[quality].map(interval => {
+    const midi = rootMidi + interval;
+    return SEMITONE_NAME[midi % 12] + (Math.floor(midi / 12) - 1);
+  });
+}
+
+// ── Playback helpers ──────────────────────────────────────────────────────────
+
+function playChord(chordName) {
+  if (!synth.ready) return;
+  synth.sampler.triggerAttack(chordToNotes(chordName), Tone.now());
+}
+
+function stopAllNotes() {
+  synth.sampler?.releaseAll();
+}
+
+// Resume AudioContext on the very first user interaction (browser autoplay policy).
+// Tone.start() is idempotent — safe to call multiple times.
+['click', 'keydown', 'touchstart'].forEach(evt =>
+  document.addEventListener(evt, () => Tone.start(), { once: true, passive: true })
+);
+
+// Start loading samples immediately — network fetch does not need a user gesture.
+initSynth();
+
 // ── jsPsych init ─────────────────────────────────────────────────────────────
 const jsPsych = initJsPsych({
   show_progress_bar: true,
@@ -76,10 +234,10 @@ const jsPsych = initJsPsych({
 
 let pairsCompleted = 0;
 
-// ── Chord pairs (placeholder names — replace with actual list) ────────────────
+// ── Chord pairs ───────────────────────────────────────────────────────────────
 // Format: { id, chord1, chord2 }
-// Currently: 12 parallel maj→min + 12 parallel min→maj
-//          + 12 relative maj→min + 12 relative min→maj = 48 pairs
+// 12 parallel maj→min + 12 parallel min→maj
+// + 12 relative maj→min + 12 relative min→maj = 48 pairs
 const CHORD_PAIRS = [
   // --- Parallel major → minor ---
   { id:  1, chord1: "C major",  chord2: "C minor"  },
@@ -136,8 +294,6 @@ const CHORD_PAIRS = [
 ];
 
 // ── SAM scale definitions ─────────────────────────────────────────────────────
-// Images: replace files in img/sam_valence_1.png … img/sam_arousal_5.png
-// with actual SAM manikin images when available.
 const VALENCE = [
   { value: 1, img: "img/sam_valence_1.png", desc: "Very unpleasant" },
   { value: 2, img: "img/sam_valence_2.png", desc: "Unpleasant"      },
@@ -154,7 +310,6 @@ const AROUSAL = [
   { value: 5, img: "img/sam_arousal_5.png", desc: "Very excited" },
 ];
 
-// Each SAM option becomes a button choice (image + number + label).
 function samChoices(scale) {
   return scale.map(s =>
     `<div class="sam-btn">
@@ -170,7 +325,6 @@ function samStimulus(question) {
           <p style="color:#999;font-size:0.85em">Click an image <em>or</em> press <strong>1–5</strong>:</p>`;
 }
 
-// Keyboard 1–5 support for SAM: plain DOM listener, removed on response.
 function samOnLoad() {
   function handler(e) {
     if (e.key >= '1' && e.key <= '5') {
@@ -189,7 +343,6 @@ function samOnLoad() {
 // ── Timeline ──────────────────────────────────────────────────────────────────
 const timeline = [];
 
-// Allows any keypress to act as a button click (desktop convenience).
 function keyAlsoClicks() {
   function handler() {
     document.removeEventListener('keydown', handler);
@@ -211,6 +364,8 @@ timeline.push({
   `,
   choices: ["Continue"],
   on_load: keyAlsoClicks,
+  // Clicking Continue also resumes the AudioContext (satisfies browser autoplay policy)
+  on_finish: () => Tone.start(),
 });
 
 // Instructions
@@ -246,16 +401,27 @@ for (const pair of shuffledPairs) {
     trial_duration: 600,
   });
 
-  // Chord 1 display (placeholder for audio)
+  // Chord 1
   timeline.push({
     type: jsPsychHtmlKeyboardResponse,
     stimulus: `
       <p class="chord-label">Chord 1 of 2 — listen carefully</p>
       <div class="chord-display">&#9835; ${pair.chord1}</div>
-      <p style="color:#bbb;font-size:0.8em">[audio placeholder]</p>
     `,
     choices: "NO_KEYS",
     trial_duration: 1200,
+    on_load: () => {
+      // If sampler isn't ready yet (slow network), retry every 50 ms within this trial
+      function tryPlay() {
+        if (synth.ready) {
+          playChord(pair.chord1);
+        } else {
+          setTimeout(tryPlay, 50);
+        }
+      }
+      tryPlay();
+    },
+    on_finish: () => stopAllNotes(),
     data: { phase: "chord1", pair_id: pair.id, chord1: pair.chord1, chord2: pair.chord2 },
   });
 
@@ -267,16 +433,17 @@ for (const pair of shuffledPairs) {
     trial_duration: 200,
   });
 
-  // Chord 2 display (placeholder for audio)
+  // Chord 2
   timeline.push({
     type: jsPsychHtmlKeyboardResponse,
     stimulus: `
       <p class="chord-label">Chord 2 of 2 — listen carefully</p>
       <div class="chord-display">&#9835; ${pair.chord2}</div>
-      <p style="color:#bbb;font-size:0.8em">[audio placeholder]</p>
     `,
     choices: "NO_KEYS",
     trial_duration: 1200,
+    on_load: () => playChord(pair.chord2),
+    on_finish: () => stopAllNotes(),
     data: { phase: "chord2", pair_id: pair.id, chord1: pair.chord1, chord2: pair.chord2 },
   });
 
@@ -295,8 +462,7 @@ for (const pair of shuffledPairs) {
     data: { phase: "free_text", pair_id: pair.id, chord1: pair.chord1, chord2: pair.chord2 },
   });
 
-  // SAM Valence — html-button-response so clicking works natively;
-  // keyboard 1-5 handled by samOnLoad via jsPsych.pluginAPI.
+  // SAM Valence
   timeline.push({
     type: jsPsychHtmlButtonResponse,
     stimulus: samStimulus(
