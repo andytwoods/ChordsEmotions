@@ -6,12 +6,11 @@
   <script src="https://unpkg.com/jspsych@8.2.3"></script>
   <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@2.0.0"></script>
   <script src="https://unpkg.com/@jspsych/plugin-html-button-response@2.0.0"></script>
-  <script src="https://unpkg.com/@jspsych/plugin-survey-text@2.0.0"></script>
   <script src="https://unpkg.com/tone@14.7.77/build/Tone.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/jspsych@8.2.3/css/jspsych.css">
   <style>
     .chord-display {
-      font-size: 1.8em;
+      font-size: 2.4em;
       color: #2c3e50;
       padding: 30px 50px;
       border: 2px dashed #ccc;
@@ -27,6 +26,7 @@
       margin-bottom: 6px;
     }
     .jspsych-content { max-width: 760px; }
+
     /* SAM button group layout */
     #jspsych-html-button-response-btngroup {
       display: flex;
@@ -34,7 +34,6 @@
       gap: 8px;
       flex-wrap: nowrap;
     }
-    /* Reset default button chrome so SAM images display cleanly */
     #jspsych-html-button-response-btngroup .jspsych-btn {
       background: none;
       border: 2px solid transparent;
@@ -52,10 +51,69 @@
       width: 66px;
       height: 66px;
       margin: 0 auto 4px;
-      background: #e8e8e8; /* placeholder colour when image is missing */
+      background: #e8e8e8;
     }
     .sam-btn .sam-num   { font-weight: bold; font-size: 1em; color: #333; }
     .sam-btn .sam-label { font-size: 0.70em; color: #555; margin-top: 2px; }
+
+    /* Replay button */
+    .replay-btn {
+      background: #fff;
+      border: 2px solid #4a90d9;
+      border-radius: 8px;
+      color: #4a90d9;
+      cursor: pointer;
+      font-size: 1em;
+      padding: 8px 22px;
+      margin-bottom: 20px;
+      transition: background 0.15s, color 0.15s;
+    }
+    .replay-btn:hover { background: #4a90d9; color: #fff; }
+
+    /* Free-text area */
+    #emotion-text {
+      display: block;
+      width: 100%;
+      max-width: 480px;
+      font-size: 1em;
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      resize: vertical;
+      margin: 0 auto 4px;
+      box-sizing: border-box;
+    }
+
+    /* Adjective picker */
+    .adjective-section {
+      margin-top: 14px;
+      text-align: center;
+    }
+    .adj-hint {
+      font-size: 0.80em;
+      color: #999;
+      margin-bottom: 8px;
+    }
+    .adj-grid {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 6px;
+      max-width: 560px;
+      margin: 0 auto 12px;
+    }
+    .adj-btn {
+      background: #f0f0f0;
+      border: 1px solid #ccc;
+      border-radius: 16px;
+      color: #444;
+      cursor: pointer;
+      font-size: 0.85em;
+      padding: 4px 12px;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .adj-btn:hover  { background: #dce8f8; border-color: #4a90d9; color: #2c3e50; }
+    .adj-btn.used   { background: #4a90d9; border-color: #4a90d9; color: #fff; }
   </style>
 </head>
 <body>
@@ -82,29 +140,23 @@ const REVERB_WET   = 0.22;  // 0 = dry, 1 = fully wet
 // Root octave for all chords (4 = middle-C range, good for piano/strings)
 const CHORD_OCTAVE = 4;
 
-// ── Instrument definitions ────────────────────────────────────────────────────
-//
-// Salamander Grand Piano: hosted by Tone.js, best pitch coverage.
-// All other instruments: FluidR3_GM soundfont via gleitz/midi-js-soundfonts CDN.
-//   Samples are spaced a minor-third apart (A2…Gb5), which gives Tone.js enough
-//   reference points for accurate pitch-shifting across the full keyboard.
+// Duration each chord sounds (ms). The pair plays chord1 → chord2 with no gap.
+// Total audio per pair = 2 × CHORD_DURATION.
+const CHORD_DURATION = 2000;
 
+// ── Instrument definitions ────────────────────────────────────────────────────
 const GLEITZ_BASE = 'https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/';
 
-// Build a note→filename map for gleitz instruments.
-// Keys and filenames use the same string (e.g. 'Eb4' → 'Eb4.mp3').
 function gleitzUrls(noteNames) {
   return Object.fromEntries(noteNames.map(n => [n, n + '.mp3']));
 }
 
-// Spread every minor-third from A2 to Gb5 — good coverage, low download size.
 const GLEITZ_SPREAD = ['A2','C3','Eb3','Gb3','A3','C4','Eb4','Gb4','A4','C5','Eb5','Gb5'];
 
 const INSTRUMENTS = {
   acoustic_grand_piano: {
     label: 'Grand Piano (Salamander)',
     baseUrl: 'https://tonejs.github.io/audio/salamander/',
-    // Salamander filenames encode D# as 'Ds' and F# as 'Fs'
     urls: {
       'A0':'A0.mp3',  'C1':'C1.mp3',  'D#1':'Ds1.mp3', 'F#1':'Fs1.mp3',
       'A1':'A1.mp3',  'C2':'C2.mp3',  'D#2':'Ds2.mp3', 'F#2':'Fs2.mp3',
@@ -148,10 +200,7 @@ const synth = { sampler: null, reverb: null, ready: false };
 
 async function initSynth() {
   const cfg = INSTRUMENTS[ACTIVE_INSTRUMENT];
-  if (!cfg) {
-    console.error('[ChordSynth] Unknown instrument:', ACTIVE_INSTRUMENT);
-    return;
-  }
+  if (!cfg) { console.error('[ChordSynth] Unknown instrument:', ACTIVE_INSTRUMENT); return; }
   console.log('[ChordSynth] Loading', cfg.label, '…');
 
   synth.reverb = new Tone.Reverb({ decay: REVERB_DECAY, preDelay: 0.01, wet: REVERB_WET });
@@ -161,20 +210,14 @@ async function initSynth() {
   synth.sampler = new Tone.Sampler({
     urls: cfg.urls,
     baseUrl: cfg.baseUrl,
-    onload: () => {
-      synth.ready = true;
-      console.log('[ChordSynth] Ready —', cfg.label);
-    },
+    onload:  () => { synth.ready = true; console.log('[ChordSynth] Ready —', cfg.label); },
     onerror: (err) => console.error('[ChordSynth] Sample load error:', err),
   });
   synth.sampler.connect(synth.reverb);
 }
 
 // ── Chord → notes conversion ──────────────────────────────────────────────────
-//
-// Supports all roots in the study: C C# Db D D# Eb E F F# Gb G G# Ab A A# Bb B
-// Supports qualities: major, minor
-//
+
 const NOTE_SEMITONE = {
   'C':0, 'C#':1, 'Db':1, 'D':2, 'D#':3, 'Eb':3, 'E':4,
   'F':5, 'F#':6, 'Gb':6, 'G':7, 'G#':8, 'Ab':8,
@@ -188,7 +231,6 @@ const CHORD_INTERVALS = {
   minor: [0, 3, 7],
 };
 
-// Returns an array of Tone.js note strings, e.g. ['C4','E4','G4']
 function chordToNotes(chordName, octave = CHORD_OCTAVE) {
   const [rootName, quality] = chordName.split(' ');
   const rootMidi = (octave + 1) * 12 + NOTE_SEMITONE[rootName];
@@ -209,22 +251,61 @@ function stopAllNotes() {
   synth.sampler?.releaseAll();
 }
 
-// Resume AudioContext on the very first user interaction (browser autoplay policy).
-// Tone.start() is idempotent — safe to call multiple times.
+// ── Chord-pair replay ─────────────────────────────────────────────────────────
+// replayPair() is called from onclick in stimulus HTML.
+// _currentPair is set by each free-text trial's on_load.
+
+let _currentPair = null;
+let _replayTimers = [];
+
+function _clearReplayTimers() {
+  _replayTimers.forEach(clearTimeout);
+  _replayTimers = [];
+}
+
+function replayPair() {
+  _clearReplayTimers();
+  stopAllNotes();
+  if (!_currentPair) return;
+  const { chord1, chord2 } = _currentPair;
+  playChord(chord1);
+  _replayTimers.push(setTimeout(() => { stopAllNotes(); playChord(chord2); }, CHORD_DURATION));
+  _replayTimers.push(setTimeout(() => stopAllNotes(), CHORD_DURATION * 2));
+}
+
+// ── Adjective picker ──────────────────────────────────────────────────────────
+// Clicking an adjective appends it to the textarea and marks the button.
+
+const ADJECTIVES = [
+  'bright',    'joyful',      'warm',        'uplifting',  'hopeful',   'tender',
+  'dark',      'somber',      'melancholic',  'heavy',      'bleak',     'cold',
+  'tense',     'anxious',     'uneasy',       'dramatic',   'restless',
+  'calm',      'peaceful',    'serene',       'gentle',     'dreamy',
+  'mysterious','nostalgic',   'bittersweet',  'wistful',    'longing',   'unresolved',
+];
+
+function addAdjective(word, btn) {
+  btn.classList.add('used');
+  btn.disabled = true;
+  const ta = document.getElementById('emotion-text');
+  if (!ta) return;
+  const cur = ta.value.trim();
+  ta.value = cur ? cur + ', ' + word : word;
+}
+
+// ── Resume AudioContext on first user interaction (browser autoplay policy) ───
 ['click', 'keydown', 'touchstart'].forEach(evt =>
   document.addEventListener(evt, () => Tone.start(), { once: true, passive: true })
 );
 
-// Start loading samples immediately — network fetch does not need a user gesture.
 initSynth();
 
-// ── jsPsych init ─────────────────────────────────────────────────────────────
+// ── jsPsych init ──────────────────────────────────────────────────────────────
 const jsPsych = initJsPsych({
   show_progress_bar: true,
   auto_update_progress_bar: false,
   on_finish: function () {
     // TODO (Pavlovia): replace body below with the pavlovia plugin finish call.
-    // For local testing, data is shown on screen.
     document.body.innerHTML =
       '<div style="padding:40px;font-family:monospace;white-space:pre-wrap">' +
       jsPsych.data.get().csv() +
@@ -235,9 +316,6 @@ const jsPsych = initJsPsych({
 let pairsCompleted = 0;
 
 // ── Chord pairs ───────────────────────────────────────────────────────────────
-// Format: { id, chord1, chord2 }
-// 12 parallel maj→min + 12 parallel min→maj
-// + 12 relative maj→min + 12 relative min→maj = 48 pairs
 const CHORD_PAIRS = [
   // --- Parallel major → minor ---
   { id:  1, chord1: "C major",  chord2: "C minor"  },
@@ -330,9 +408,7 @@ function samOnLoad() {
     if (e.key >= '1' && e.key <= '5') {
       document.removeEventListener('keydown', handler);
       const idx = parseInt(e.key) - 1;
-      const btns = document.querySelectorAll(
-        '#jspsych-html-button-response-btngroup button'
-      );
+      const btns = document.querySelectorAll('#jspsych-html-button-response-btngroup button');
       const btn = btns[idx];
       if (btn) btn.click();
     }
@@ -346,7 +422,7 @@ const timeline = [];
 function keyAlsoClicks() {
   function handler() {
     document.removeEventListener('keydown', handler);
-    document.querySelector('.jspsych-btn').click();
+    document.querySelector('.jspsych-btn')?.click();
   }
   document.addEventListener('keydown', handler);
 }
@@ -364,7 +440,6 @@ timeline.push({
   `,
   choices: ["Continue"],
   on_load: keyAlsoClicks,
-  // Clicking Continue also resumes the AudioContext (satisfies browser autoplay policy)
   on_finish: () => Tone.start(),
 });
 
@@ -375,13 +450,15 @@ timeline.push({
     <h3>Instructions</h3>
     <p>On each trial you will:</p>
     <ol style="text-align:left;display:inline-block;line-height:2">
-      <li>Hear <strong>Chord 1</strong> (shown on screen while it plays)</li>
-      <li>Hear <strong>Chord 2</strong> after a short pause</li>
-      <li>Type a few words describing the <em>emotional feel</em> of the pair</li>
+      <li>Hear two chords played back-to-back as a single continuous sound</li>
+      <li>Use the <strong>Replay</strong> button to hear the pair again as many times as you need</li>
+      <li>Type a few words describing the <em>emotional feel</em> of the pair,
+          and/or pick from the suggested descriptors</li>
       <li>Rate how <strong>pleasant/unpleasant</strong> the pair felt (Valence)</li>
       <li>Rate how <strong>calm/excited</strong> the pair felt (Arousal)</li>
     </ol>
-    <p>Base your responses on the <em>pair as a whole</em>, not each chord separately.</p>
+    <p>Focus on the two chords as a single entity — the relationship between them,
+       not each chord individually.</p>
     <p>There are no right or wrong answers — go with your gut.</p>
   `,
   choices: ["Start experiment"],
@@ -390,6 +467,11 @@ timeline.push({
 
 // Trials
 const shuffledPairs = jsPsych.randomization.shuffle([...CHORD_PAIRS]);
+
+// Pre-build adjective picker HTML (same for every trial)
+const adjPickerHtml = ADJECTIVES.map(w =>
+  `<button class="adj-btn" onclick="addAdjective('${w}',this)">${w}</button>`
+).join('');
 
 for (const pair of shuffledPairs) {
 
@@ -401,20 +483,20 @@ for (const pair of shuffledPairs) {
     trial_duration: 600,
   });
 
-  // Chord 1
+  // Combined chord pair — chord1 plays immediately into chord2, no gap
   timeline.push({
     type: jsPsychHtmlKeyboardResponse,
     stimulus: `
-      <p class="chord-label">Chord 1 of 2 — listen carefully</p>
-      <div class="chord-display">&#9835; ${pair.chord1}</div>
+      <p class="chord-label">Listen to the chord pair</p>
+      <div class="chord-display">&#9835;</div>
     `,
     choices: "NO_KEYS",
-    trial_duration: 1200,
+    trial_duration: CHORD_DURATION * 2,
     on_load: () => {
-      // If sampler isn't ready yet (slow network), retry every 50 ms within this trial
       function tryPlay() {
         if (synth.ready) {
           playChord(pair.chord1);
+          setTimeout(() => { stopAllNotes(); playChord(pair.chord2); }, CHORD_DURATION);
         } else {
           setTimeout(tryPlay, 50);
         }
@@ -422,53 +504,40 @@ for (const pair of shuffledPairs) {
       tryPlay();
     },
     on_finish: () => stopAllNotes(),
-    data: { phase: "chord1", pair_id: pair.id, chord1: pair.chord1, chord2: pair.chord2 },
+    data: { phase: "audio", pair_id: pair.id, chord1: pair.chord1, chord2: pair.chord2 },
   });
 
-  // Inter-stimulus interval
+  // Free-text description + replay + adjective picker
   timeline.push({
-    type: jsPsychHtmlKeyboardResponse,
-    stimulus: '<div style="font-size:2em;color:#ccc">&bull; &bull; &bull;</div>',
-    choices: "NO_KEYS",
-    trial_duration: 200,
-  });
-
-  // Chord 2
-  timeline.push({
-    type: jsPsychHtmlKeyboardResponse,
+    type: jsPsychHtmlButtonResponse,
     stimulus: `
-      <p class="chord-label">Chord 2 of 2 — listen carefully</p>
-      <div class="chord-display">&#9835; ${pair.chord2}</div>
+      <div style="text-align:center">
+        <button class="replay-btn" onclick="replayPair()">&#x21BA;&ensp;Replay chord pair</button>
+        <p style="margin:0 0 8px">In a few words, describe the emotional quality of this chord pair:</p>
+        <textarea id="emotion-text" rows="3"
+          placeholder="e.g. tense, melancholic, hopeful, unresolved\u2026"></textarea>
+        <div class="adjective-section">
+          <p class="adj-hint">Stuck? click words to add them to your description:</p>
+          <div class="adj-grid">${adjPickerHtml}</div>
+        </div>
+      </div>
     `,
-    choices: "NO_KEYS",
-    trial_duration: 1200,
-    on_load: () => playChord(pair.chord2),
-    on_finish: () => stopAllNotes(),
-    data: { phase: "chord2", pair_id: pair.id, chord1: pair.chord1, chord2: pair.chord2 },
-  });
-
-  // Free-text emotional description
-  timeline.push({
-    type: jsPsychSurveyText,
-    questions: [{
-      prompt: `<strong>${pair.chord1} &rarr; ${pair.chord2}</strong><br>
-               In a few words, describe the emotional quality of this chord pair:`,
-      name: "description",
-      placeholder: "e.g. tense, melancholic, hopeful, unresolved\u2026",
-      rows: 3,
-      columns: 50,
-      required: true,
-    }],
+    choices: ['Continue &rarr;'],
+    on_load: () => {
+      _currentPair = pair;
+    },
+    on_finish: function(data) {
+      _clearReplayTimers();
+      stopAllNotes();
+      data.free_text = document.getElementById('emotion-text')?.value ?? '';
+    },
     data: { phase: "free_text", pair_id: pair.id, chord1: pair.chord1, chord2: pair.chord2 },
   });
 
   // SAM Valence
   timeline.push({
     type: jsPsychHtmlButtonResponse,
-    stimulus: samStimulus(
-      `<strong>${pair.chord1} &rarr; ${pair.chord2}</strong><br>
-       How <em>pleasant</em> or <em>unpleasant</em> did this chord pair feel?`
-    ),
+    stimulus: samStimulus('How <em>pleasant</em> or <em>unpleasant</em> did this chord pair feel?'),
     choices: samChoices(VALENCE),
     on_load: samOnLoad,
     data: { phase: "valence", pair_id: pair.id, chord1: pair.chord1, chord2: pair.chord2 },
@@ -478,10 +547,7 @@ for (const pair of shuffledPairs) {
   // SAM Arousal
   timeline.push({
     type: jsPsychHtmlButtonResponse,
-    stimulus: samStimulus(
-      `<strong>${pair.chord1} &rarr; ${pair.chord2}</strong><br>
-       How <em>calm</em> or <em>excited</em> did this chord pair feel?`
-    ),
+    stimulus: samStimulus('How <em>calm</em> or <em>excited</em> did this chord pair feel?'),
     choices: samChoices(AROUSAL),
     on_load: samOnLoad,
     data: { phase: "arousal", pair_id: pair.id, chord1: pair.chord1, chord2: pair.chord2 },
